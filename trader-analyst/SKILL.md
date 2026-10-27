@@ -1,123 +1,110 @@
 ---
 name: trader-analyst
 description: >-
-  The Earnings Analyst. Reads a company's reported numbers straight from SEC
-  EDGAR (XBRL company facts from its 10-Qs and 10-Ks, plus the latest earnings
-  8-K and its press release) and sums up what changed: revenue, gross,
-  operating and net margins, net income and diluted EPS, quarter by quarter,
-  each against the same quarter a year earlier, with the trailing twelve
-  months. Reads an earnings call transcript when you paste one. Use when the
-  user says "how did Tesla's earnings look", "analyze the earnings", "what
-  changed this quarter", "is revenue growing", "check the 10-Q", "compare
-  margins", "sum up the call", "does it report this week", or before trading
-  a stock around its earnings.
-argument-hint: "[tickers]"
+  The Earnings Analyst for NSE companies. Reads a company's reported numbers
+  (Yahoo Finance's fundamentals for the NSE listing, consolidated) and sums
+  up what changed: revenue, gross, operating and net margins, net profit and
+  diluted EPS, quarter by quarter on India's April-to-March fiscal year (Q1
+  FY27 = April to June 2026), each against the same quarter a year earlier,
+  plus four fiscal years, in rupee crore. Says plainly when a quarter is
+  missing or out of date and links the exchange filing, which is the
+  authority. Reads a results press release or a con-call transcript when you
+  paste one. Use when the user says "how were Reliance's results", "analyse
+  the quarterly results", "what changed this quarter", "is revenue growing",
+  "compare margins", "sum up the con call", "when are results", or before
+  trading a stock around its results.
+argument-hint: "[symbols]"
 ---
 
 # trader-analyst
 
-Earnings move stocks more than anything else on the calendar, and the press
-release is written to put the best number first. This skill reads the numbers
-the company actually filed with the SEC, lines them up quarter by quarter, and
-says plainly what changed. For a day trader it answers two questions before a
-trade: what did the last report say, and is the next one inside this trade?
+Quarterly results move Indian stocks more than anything else on the
+calendar, and the press release puts the best number first. This skill lines
+the reported numbers up quarter by quarter and says plainly what changed.
+For a day trader it answers two questions before a trade: what did the last
+results say, and is the next board meeting for results inside this trade?
 
 Tool in this folder (standard library Python, no keys):
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/facts.py" --help
+python3 "${CLAUDE_SKILL_DIR}/facts.py" RELIANCE
+python3 "${CLAUDE_SKILL_DIR}/facts.py" RELIANCE TCS INFY --metrics trader/metrics.json
+python3 "${CLAUDE_SKILL_DIR}/facts.py" TCS --quarters 8 --json
 ```
-
-It needs the SEC User-Agent (`sec_user_agent` in `trader/config.json`, or
-`SEC_USER_AGENT`): "Your Name you@example.com" with the user's real name and
-email. It refuses to call SEC without one.
 
 ## What it reads and writes
 
-- Reads `https://data.sec.gov/api/xbrl/companyfacts/CIK##########.json` (every
-  number the company has tagged in its filings), the company's submissions
-  list (for the newest 10-Q or 10-K and the newest 8-K with item 2.02,
-  "Results of Operations") and that 8-K's folder to find the press release
-  (the EX-99.1 exhibit).
-- Writes `trader/metrics.json` with `--metrics`: one row per company (TTM
-  revenue, net income and diluted EPS, the latest margins and growth), for
-  your notes or a spreadsheet. `metrics.example.json` in this folder is a
-  real run for AAPL, AXP, GOOGL, KO and BAC on 2026-10-13.
-- Earnings calls: the tool does not fetch transcripts. If the user pastes one
-  (or the company's IR page has it), read it and sum up what management said
-  changed: guidance, margins, demand, anything they declined to answer.
-- The next report date is not in SEC data. Look for it in `/trader-news`
-  headlines or on the company's investor relations page, and say where it
-  came from.
+- Reads Yahoo Finance's fundamentals time series for SYMBOL.NS: quarterly
+  and annual revenue, gross profit, operating income, net income and diluted
+  EPS (about five quarters and four fiscal years). Free and unofficial.
+- Company names come from `trader/instruments.json` (trader-scanner).
+- Writes `trader/metrics.json` with `--metrics`: one row per company (the
+  latest quarter, margins, growth, TTM when four quarters in a row exist,
+  and the quarters Yahoo is missing). `metrics.example.json` in this folder
+  is a real run on 2026-10-26.
+- The filings themselves are on NSE's financial results page
+  (`nseindia.com/companies-listing/corporate-filings-financial-results?symbol=X`)
+  and on BSE. Both block scripts: the tool links the page, the user opens it,
+  and you read what they paste or save. Con-call transcripts and investor
+  presentations are on the company's investor relations page.
 
 ## The rules
 
-- **Filed numbers first.** The table comes from XBRL facts the company filed.
-  Use the press release for context (guidance, segment colour), and say which
-  numbers came from where.
+- **Filed numbers win.** The table is Yahoo's copy of what the company
+  reported. When Yahoo is behind (it can be weeks after a results board
+  meeting) or skips a quarter, say so and read the filing. The tool marks a
+  missing quarter ("Yahoo is missing Q2 FY26 (2025-09-30)") and a stale one
+  ("newer results are out"). Never fill a gap with an estimate.
 - **Compare like with like.** Growth is against the same quarter a year
-  earlier. Quarter-on-quarter changes are shown but many businesses are
-  seasonal (Apple's December quarter is always its biggest).
-- **Say what is derived.** Companies do not file a Q4 10-Q. The fourth
-  quarter is the 10-K year minus the three quarters inside it and is marked
-  "derived"; derived EPS is approximate.
-- **Say when the data lags.** SEC's facts API can trail a filing. When the
-  newest 10-Q is later than the newest quarter in the facts, the tool prints a
-  NOTE with the link: read the 10-Q itself before summarising.
-- **Flag one-offs.** When net income is above operating income, gains outside
-  the business (investment marks, tax items) are inside it. The tool says so.
-  Banks and insurers have no gross margin: blank, not zero.
+  earlier, only when Yahoo has both. Many Indian businesses are seasonal
+  (festive quarters, monsoon), so quarter-on-quarter is a note, not the story.
+- **Indian fiscal years.** FY26 is April 2025 to March 2026. Q1 FY27 ends
+  30 June 2026. Say the quarter both ways when it helps ("Q1 FY27, April to
+  June").
+- **Amounts in crore.** 1 crore = 10 million rupees; the tool groups Indian
+  style (₹3,09,468 cr). EPS is in rupees.
+- **Flag one-offs.** When net profit is above operating profit, other income
+  or exceptional gains are inside it. Banks and NBFCs have no gross margin:
+  blank, not zero. An EPS change of 40% or more is often a bonus issue or a
+  split that Yahoo did not adjust: check before calling it a fall.
+- **Standalone vs consolidated.** Yahoo shows consolidated. Headlines often
+  quote standalone. Say which one a number is.
 
 ## Steps
 
-1. Run it for the companies in question (or the tickers on
-   `trader/watchlist.json`):
+1. Run it for the companies in question (or the symbols on
+   `trader/watchlist.json`).
+2. If the table is stale or has a gap that matters, give the user the
+   filing link and ask them to open it (or paste the results).
+3. Write the summary: one line on the quarter (revenue, profit, EPS,
+   growth), one on margins, one on anything unusual (a one-off, a gap, a
+   stale quarter, a bonus or split), and the links. Plain words, real
+   numbers, no adjectives the numbers do not support.
+4. If the next results board meeting falls inside the planned trade, say it
+   before `/trader-exit` sets the stop. The date is in NSE's corporate
+   announcements (board meeting intimation) and in `/trader-news`
+   headlines; say where it came from. A day trade flat by 3:05 is not
+   exposed to results announced after the close; anything held overnight is.
 
-   ```bash
-   python3 "${CLAUDE_SKILL_DIR}/facts.py" TSLA
-   python3 "${CLAUDE_SKILL_DIR}/facts.py" TSLA NVDA AMD --metrics trader/metrics.json
-   ```
+## Example: RELIANCE, 26 October 2026
 
-   `--quarters 8` shows two years, `--json` everything machine-readable,
-   `--cik` a company without a ticker.
-2. Open the latest earnings press release (the EX-99 link) and the 10-Q when
-   the numbers need context, and read them.
-3. Write the summary: one line on the quarter (revenue, EPS, growth), one on
-   margins, one on anything unusual (a one-off, a derived quarter, data that
-   lags), and the links. Plain words, real numbers, no adjectives the numbers
-   do not support.
-4. If the next report falls inside the planned trade (an overnight hold, or a
-   report before the open), say it before `/trader-exit` sets the stop: a stop
-   does not protect against a gap, the stock can open past it.
-
-## Example: the reel's stock
-
-`facts.py TSLA` (run 2026-10-20): quarter ending 2026-06-30 (Q2 2026),
-revenue $28.24B, +25.5% against a year earlier, net income $1.11B (-4.9%),
-diluted EPS $0.32 (-3.0%); gross margin 16.8% (-4.3 points on the quarter
-before), operating margin 1.4%; last four quarters $103.6B revenue and $1.08
-EPS. The tool flags that net income is above operating income, so gains
-outside the business are inside it. Latest 10-Q filed 2026-07-23. Monday's
-headlines said Tesla reports this week, so the summary ends: "The next report
-is days away. A day trade that closes before the bell is not exposed to it;
-anything held overnight is."
-
-`facts.py AAPL` (2026-10-13): revenue $109.42B, +16.4% against a year
-earlier, diluted EPS $2.02 (+28.7%). For Coca-Cola the tool noted that SEC's
-facts stopped at 2026-04-03 while the 10-Q for 2026-07-03 was already filed,
-so the summary read that 10-Q directly.
+`facts.py RELIANCE`: Q1 FY27 (quarter ended 2026-06-30) revenue ₹3,09,468 cr,
++27.0% against Q1 FY26; net profit ₹20,946 cr, -22.4%; diluted EPS ₹15.48,
+-22.4%; operating margin 10.5%, +0.5 points on Q4 FY26. FY26 revenue
+₹10,57,219 cr (+9.6%), net profit ₹80,775 cr (+16.0%). Yahoo is missing Q2
+FY26, so there is no TTM. Q2 FY27 (July to September) results are due around
+now: the summary ends "Yahoo does not have Q2 FY27 yet. If the board has
+met, read the filing: [link]."
 
 ## What it never does
 
 - Never says a stock is cheap, expensive, a buy or a sell. It reports what
-  the company filed.
-- Never invents a number the filings do not have, or estimates a quarter it
-  cannot derive.
-- Never calls SEC without the User-Agent, and stays well under 10 requests a
-  second.
+  the company reported.
+- Never invents a number the data does not have, or estimates a quarter.
+- Never tries to get past NSE's or BSE's block on scripts.
 
 ## Safety
 
-Education and tooling, not financial advice. This skill only reads filings.
-Nothing places an order except `/trader-broker`, after `/trader-risk` passes
+Education and tooling, not financial advice. This skill only reads numbers.
+Nothing sends an order except `/trader-broker`, after `/trader-risk` passes
 and the user types an explicit yes for that order.

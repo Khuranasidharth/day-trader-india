@@ -1,49 +1,61 @@
 ---
 name: trader-broker
 description: >-
-  Order Executor. Sends approved orders to your broker, paper trading by
-  default, never without your yes. Shows each order as a plain ticket (a
-  bracket shows its stop-loss, take-profit and the max loss at the stop)
-  plus the exact JSON for Alpaca's place_stock_order, records your yes word
-  for word, then Claude's own Allow once / Deny card asks again. Builds the
-  sell ticket that closes a day trade by your flat-by time, records fills,
-  and logs each trade's max loss so trader-risk can hold the daily limit.
-  Covers setting up Alpaca's official MCP server in Claude Desktop (paper by
-  default, keys in env vars, never in chat), the Interactive Brokers
-  connector, and setting order tools to "Needs approval". Use when the user
-  says "place the order", "buy it", "execute", "send it to my broker",
-  "close my position", "flatten", "get me out", "connect Alpaca", "set up
-  paper trading", or after /trader-risk passes.
+  Order Executor for Upstox. Sends approved orders to Upstox, paper trading
+  (the Upstox sandbox) by default, never without your yes. Shows each order
+  as a plain ticket (a bracket shows its stop-loss, target and the max loss
+  at the stop with charges) plus the exact Upstox request: a GTT with three
+  legs (ENTRY, TARGET, STOPLOSS, product I) for a live bracket, the entry leg
+  on the sandbox for paper. Records your yes word for word. Paper orders go
+  out with place.py; a LIVE order is always sent by you, in your own terminal
+  (place.py asks you to type the order back) or in the Upstox app, because
+  Upstox needs a registered static IP for API orders and real money needs a
+  person. Builds the sell ticket that closes a day trade by 3:05 PM, records
+  fills, and logs each trade's max loss so trader-risk can hold the daily
+  limit. Covers setting up Upstox's sandbox and API tokens (environment
+  variables, never in chat). Use when the user says "place the order", "buy
+  it", "execute", "send it to Upstox", "close my position", "flatten", "get
+  me out", "connect Upstox", "set up paper trading", or after /trader-risk passes.
 argument-hint: "[order number]"
 ---
 
 # trader-broker
 
 The Order Executor is the only skill in this pack that can lead to a real
-order, so it is the strictest. An order reaches the market only after three
-separate gates, every time, for every order:
+order, so it is the strictest. An order reaches Upstox only after these
+gates, every time, for every order, and `place.py` checks each one itself:
 
 1. **trader-risk passed this exact order today** (matched by fingerprint).
-2. **The user typed an explicit yes for this one order** in the chat.
-3. **The user clicked Allow once** on Claude's own permission card, which
-   appears because the order tool is set to "Needs approval".
+2. **The user typed an explicit yes for this one order** in the chat
+   (`ticket.py approve` records it word for word).
+3. **Paper or live matches the config.** Paper (`"paper": true`) goes to the
+   Upstox sandbox: no money moves. Live needs `"paper": false`, set by the
+   user, AND the user running `place.py --live` in their own terminal and
+   typing the order back ("BUY 43 RELIANCE"). With no person at a keyboard it
+   refuses. Or the user places it in the Upstox app from the ticket.
 
-Two yeses from the user, one PASS from the rules. No yes, no order.
+Claude may run `place.py` for a paper order after the user's yes. Claude
+never sends a live order: it shows the user the command or the app steps.
 
 `${CLAUDE_SKILL_DIR}` below is this skill's folder (where this SKILL.md lives).
 
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" show                     # every ticket, READY or not
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" approve --index 1 --reply "yes"
-python3 "${CLAUDE_SKILL_DIR}/ticket.py" result --index 1 --status placed --broker-id ID --filled-qty 8 --filled-price 364.20
-python3 "${CLAUDE_SKILL_DIR}/ticket.py" fill --symbol TSLA --side sell --qty 8 --price 370.04
-python3 "${CLAUDE_SKILL_DIR}/ticket.py" flatten --symbol TSLA --qty 8
+python3 "${CLAUDE_SKILL_DIR}/place.py" --index 1 --dry-run       # the request, nothing sent
+python3 "${CLAUDE_SKILL_DIR}/place.py" --index 1                 # paper: the Upstox sandbox
+python3 "${CLAUDE_SKILL_DIR}/place.py" --index 1 --live          # LIVE: the user runs this, never Claude
+python3 "${CLAUDE_SKILL_DIR}/ticket.py" result --index 1 --status placed --broker-id GTT-C26...   # placed in the app
+python3 "${CLAUDE_SKILL_DIR}/ticket.py" fill --symbol RELIANCE --side buy --qty 43 --price 1193.60
+python3 "${CLAUDE_SKILL_DIR}/ticket.py" flatten --symbol RELIANCE --qty 43
+python3 "${CLAUDE_SKILL_DIR}/place.py" cancel-gtt --id GTT-C26... --live   # the user runs this
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" log
 ```
 
-`ticket.py` never talks to a broker. It renders tickets, checks that a reply
-is a real yes for that order, builds the flatten ticket, and keeps the log in
-`trader/state/broker.json`. `--now "2026-10-19 10:15"` pins the clock (New York time).
+`ticket.py` never talks to a broker. `place.py` sends one order, never
+retries, and records placed (with Upstox's order id) or failed (with
+Upstox's message) in `trader/state/broker.json`. `--now "2026-10-26 10:00"`
+pins the clock (IST).
 
 ## What it reads and writes
 
@@ -52,88 +64,43 @@ is a real yes for that order, builds the flatten ticket, and keeps the log in
 | `trader/orders.json` | the proposed orders (trader-budget writes it; `flatten` replaces it) |
 | `trader/state/risk.json` | trader-risk's verdicts; only a PASS from today is READY |
 | `trader/state/broker.json` | every yes, no, placed, failed and filled, with each entry's max loss |
-| `trader/portfolio.json` | cash and shares, updated by `fill` and by `result --filled-qty` |
+| `trader/portfolio.json` | cash and shares, updated by `fill` |
+| `trader/instruments.json` | the Upstox instrument key for `flatten` |
 | `trader/plan.json` | the flat-by time for `flatten` |
 
-## Setup A: Alpaca (official MCP server, Claude Desktop)
+## Setup: Upstox
 
-Alpaca's own server is github.com/alpacahq/alpaca-mcp-server (MIT). It runs on
-the user's computer inside Claude Desktop. It is not in Claude's connector
-directory. It trades on a **paper** account unless told otherwise. Checked
-against its source on 2026-10-20 (version 2.4.0).
+1. **Paper first: the sandbox.** In Upstox's developer console
+   (account.upstox.com/developer/apps), open Sandbox, make the one sandbox
+   app Upstox allows, and Generate a token (it lasts 30 days). The user
+   exports it in their own terminal or shell profile:
+   `export UPSTOX_SANDBOX_ACCESS_TOKEN=...`. The sandbox takes plain orders
+   only (no GTT), so on paper `place.py` sends the entry leg as a limit
+   order and trader-alerts watches the stop and the target.
+2. **Live, later, and only if the user decides to.** An Upstox API app and a
+   daily access token (`UPSTOX_ACCESS_TOKEN`; Upstox makes you log in again
+   every day). Since April 2026 Upstox, following SEBI's retail algo rules,
+   accepts API orders only from a static IP registered on the API app. Most
+   home connections have no static IP: then place live orders in the Upstox
+   app from the ticket (`ticket.py show` prints the steps), and use the API
+   for paper only.
+3. **Tokens never go in the chat.** Never ask for them, never read a shell
+   profile or env file back into the conversation, and if the user pastes a
+   token anyway, tell them to delete that message and generate a new one.
+4. **Read-only account access** (optional): Upstox's own Claude plugin
+   (`/plugin marketplace add upstox/upstox-plugin-marketplace`, then
+   `/plugin install upstox-mcp@upstox-plugins-official`) gives Claude
+   read-only holdings, positions, orders and funds. Use it to check
+   positions and fills. It cannot place orders.
+5. In Claude Code, keep `place.py` on ask: never put
+   `Bash(python3 *place.py*)` in an allow list.
 
-1. The user makes an Alpaca account and creates **paper trading** API keys in
-   the Alpaca dashboard. Paper keys are separate from live keys.
-2. The user installs `uv` (it provides `uvx`), from docs.astral.sh/uv.
-3. In Claude Desktop: Settings > Developer > Edit Config. That opens
-   `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`,
-   Windows: `%APPDATA%\Claude\`). The user adds this block (also in
-   `claude_desktop_config.example.json` here) and types their own keys into the file:
-
-```json
-{
-  "mcpServers": {
-    "alpaca": {
-      "command": "uvx",
-      "args": ["alpaca-mcp-server"],
-      "env": {
-        "ALPACA_API_KEY": "paste your paper key here, in this file only",
-        "ALPACA_SECRET_KEY": "paste your paper secret here, in this file only",
-        "ALPACA_PAPER_TRADE": "true",
-        "ALPACA_TOOLSETS": "account,trading,stock-data"
-      }
-    }
-  }
-}
-```
-
-   The `env` block hands the keys to the server as environment variables.
-   **Keys never go in the chat.** Never ask for them, never read this file
-   back into the conversation, and if the user pastes a key anyway, tell them
-   to delete that message and make new keys in the Alpaca dashboard.
-   `ALPACA_PAPER_TRADE` is already true by default; writing it makes it
-   visible. `ALPACA_TOOLSETS` is optional and hides the tools they do not need.
-4. Restart Claude Desktop.
-5. **Set the tool permissions.** Customize > Connectors (Settings > Connectors
-   in older versions), open alpaca, and for each tool pick Always allow, Needs
-   approval or Blocked:
-   - `place_stock_order`: **Needs approval**. Never Always allow.
-   - every other tool that places, changes, cancels or closes anything
-     (`cancel_order_by_id`, `replace_order_by_id`, `close_position`,
-     `update_account_config`): Needs approval.
-   - `place_option_order`, `place_crypto_order`, `close_all_positions`,
-     `cancel_all_orders`, `exercise_options_position`,
-     `do_not_exercise_options_position`: **Blocked** unless the user has a
-     reason and says so.
-   - read-only tools (`get_account_info`, `get_all_positions`, `get_open_position`,
-     `get_orders`, `get_clock`, `get_stock_snapshot`, `get_stock_latest_quote`):
-     Always allow is fine.
-6. Check it: ask Claude for the Alpaca account info (read only) and confirm
-   in the Alpaca dashboard that it is the paper account.
-
-In Claude Code instead of Claude Desktop, keep the order tool on ask in
-`.claude/settings.json`: `"permissions": {"ask": ["mcp__alpaca__place_stock_order"]}`,
-and never put an order tool in `allow`.
-
-**Bracket orders on Alpaca.** `place_stock_order` takes
-`take_profit_limit_price` and `stop_loss_stop_price` (and an optional
-`stop_loss_limit_price`). When either is there, the server sets
-`order_class` to "bracket" by itself; trader-budget writes it anyway so the
-ticket shows it. A bracket is whole shares only, with `time_in_force` day or
-gtc. After the entry fills, the stop-loss and the take-profit wait at the
-broker as two orders that cancel each other. They are day orders too, so they
-end at the close: one more reason to be flat by then.
-
-## Setup B: Interactive Brokers (connector in Claude's directory)
-
-Interactive Brokers publishes a verified connector: claude.ai/directory/interactive-brokers
-(connector URL `https://api.ibkr.com/v1/api/mcp`). Add it from Customize >
-Connectors > Browse connectors and sign in to IBKR there, not in the chat.
-Its listing says Claude can draft trade instructions that are sent to the
-user's IBKR account for their review and approval, and that Claude never
-submits orders directly to the market. So with IBKR the final yes happens in
-IBKR as well. Set `"broker": "ibkr"` in `trader/config.json`. Set its tools
-that draft orders to Needs approval too.
+**Brackets on Upstox.** A live bracket is a GTT order of type MULTIPLE with
+three legs: ENTRY (IMMEDIATE, a limit at the plan's entry), TARGET and
+STOPLOSS (IMMEDIATE: armed once the entry fills, and they cancel each
+other). GTT legs fill as limit orders. A plain market order carries
+`"market_protection": -1`, Upstox's automatic price protection: Upstox no
+longer takes bare market orders from the API.
 
 ## Steps: the entry
 
@@ -143,70 +110,72 @@ that draft orders to Needs approval too.
    per question. Never offer "yes to all".
 3. Run `ticket.py approve --index N --reply "<the user's reply, word for word>"`.
    If it prints "Not recorded", the reply was not an explicit yes for this
-   order (for example "sure", "yes to all", or a yes that names a different
-   stock or amount). Ask again. Never turn a reply into a yes yourself.
-4. Only after "Recorded your yes", call `place_stock_order` with exactly the
-   JSON the ticket printed. Claude's card appears: Allow once or Deny.
-5. Record what happened: `ticket.py result --index N --status placed
-   --broker-id <id> --filled-qty Q --filled-price P` (the fill from the
-   response or `get_open_position`), or `--status denied`, or `--status failed`
-   with `--note`. A failed order is not retried without a new check and a new yes.
-   The log keeps the entry's max loss for trader-risk's daily limit.
+   order (for example "sure", "haan", "yes to all", or a yes that names a
+   different stock or amount). Ask again. Never turn a reply into a yes yourself.
+4. Paper: run `place.py --index N` and tell the user the result and the
+   sandbox order id. Live: show the user the command (`place.py --index N
+   --live`, to run in their own terminal) or the app steps from the ticket,
+   and wait. When they have placed it in the app, record it with
+   `ticket.py result --index N --status placed --broker-id ID`.
+5. A failed order is not retried without a new check and a new yes.
 
-## Steps: while it is open, and out by the close
+## Steps: while it is open, and out by 3:05
 
 - trader-alerts watches the stop, the target and the flat-by time
-  (`alerts.py add --from-plan`). The bracket's own orders do the stopping.
-- When the stop-loss or the take-profit fills, record it:
-  `ticket.py fill --symbol TSLA --side sell --qty 8 --price 358.32`.
-- By `flat_by` (15:55 New York), anything still open gets closed:
-  1. Ask Alpaca how many shares are held: `get_open_position` (read only).
-  2. `ticket.py flatten --symbol TSLA --qty 8` writes a market sell for those
-     shares to `trader/orders.json`.
-  3. `/trader-risk`. A sell that only closes what the user holds is never
+  (`alerts.py add --from-plan`). On a live bracket, the GTT's legs do the
+  stopping.
+- When the stop-loss or the target fills, record it:
+  `ticket.py fill --symbol RELIANCE --side sell --qty 43 --price 1183.60`.
+- By `flat_by` (15:05 IST), anything still open gets closed:
+  1. Check the position in Upstox (the app, or upstox-mcp read-only).
+  2. Cancel the bracket's GTT FIRST (Upstox app: Orders > GTT, or the user
+     runs `place.py cancel-gtt --id GTT-... --live`). Left open, its target
+     or stop-loss leg could sell again after you are flat, and that sell
+     would be a short.
+  3. `ticket.py flatten --symbol RELIANCE --qty 43` writes a market sell
+     (product I, with price protection) to `trader/orders.json`.
+  4. `/trader-risk`. A sell that only closes what the user holds is never
      blocked by the daily limits or the entry window.
-  4. `ticket.py show`, then the user's yes for that one order, as above.
-  5. The bracket's stop-loss and take-profit still hold those shares, so
-     Alpaca rejects a new sell until they are canceled: `get_orders` (status
-     open, nested true) shows them; `cancel_order_by_id` each one (Needs
-     approval). Then `place_stock_order` with the ticket, then `result`.
+  5. `ticket.py show`, the user's yes for that one order, then `place.py`
+     (paper) or the user (live).
+- Upstox squares off intraday positions on its own from 3:10 PM (CAS stocks)
+  or 3:25 PM (the rest) and charges for it. Flat by 3:05 beats both.
 
-## Example: the reel
+## Example: RELIANCE, Monday 26 October 2026
 
 ```
-ORDER 1 of 1, PAPER account, Alpaca
-  BUY 8 TSLA, market, good for today
-  stop-loss 358.32
-  take-profit 370.04
-  max loss about $46.88 if the stop fills at 358.32 (it can fill worse in a fast market)
-  why: opening-range breakout on TSLA: 8 shares, bound by your $50 max loss per trade (8 x 5.86 = $46.88 at the stop)
+ORDER 1 of 1, PAPER (Upstox sandbox), Upstox
+  BUY 43 RELIANCE, limit 1193.60, intraday, good for today
+  stop-loss 1183.60
+  target 1203.60
+  max loss about ₹495.17 if the stop fills at 1183.60, charges included (it can fill worse in a fast market)
   READY: trader-risk PASS, waiting for your yes
-  Claude will call place_stock_order with exactly:
-    {"symbol": "TSLA", "side": "buy", "qty": "8", "type": "market", "time_in_force": "day",
-     "order_class": "bracket", "take_profit_limit_price": "370.04", "stop_loss_stop_price": "358.32"}
+  place.py sends the Upstox sandbox (paper, no money): it takes plain orders only, so this is the ENTRY
+  leg; trader-alerts watches the stop and the target on paper, POST https://api-sandbox.upstox.com/v3/order/place
+  Reply "yes" to place this one order, or "no" to skip it.
 ```
 
-The user replies "yes". Claude records it, calls `place_stock_order`, and the
-card reads "Claude wants to use Place stock order" with that JSON and two
-buttons: Allow once, Deny. Allow once sends it to the paper account. The
-`why` and the plan stay in the file; they are never sent.
+The user replies "yes". Claude records it, runs `place.py --index 1`, and
+reports the sandbox's order id. Live, the same ticket shows the GTT request
+to `https://api.upstox.com/v3/order/gtt/place` and the app steps: RELIANCE >
+Buy > GTT, Intraday, qty 43, entry 1193.60, target 1203.60, stop-loss 1183.60.
 
 ## What it never does
 
-- Never places an order without all three gates, and never two orders on one yes.
-- Never places orders from a scheduled or background task: nobody is there to say yes.
-- Never asks for, reads, stores or repeats API keys or passwords.
-- Never switches `ALPACA_PAPER_TRADE` or `"paper"` to live. The user does that themselves.
-- Never calls `close_all_positions`, `cancel_all_orders`, option or crypto order tools on its own.
-- Never promises a fill price: a market order and a stop fill at whatever the market gives.
+- Never sends an order without all the gates, and never two orders on one yes.
+- Never sends a live order itself, and never from a scheduled or background task.
+- Never asks for, reads, stores or repeats an access token.
+- Never switches `"paper"` to false. The user does that themselves.
+- Never places F&O, MTF or cover orders, and never cancels everything at once.
+- Never promises a fill price.
 
 ## Safety
 
 - Education and tooling, not financial advice. A PASS is a rules check, not a recommendation.
-- Paper trading by default (`"paper": true`). Going live is the user's own decision, in their own config.
-- Nothing in this pack places an order except trader-broker, and only when all three hold: trader-risk
-  passed that exact order today, the user typed an explicit yes for that one order in the chat, and the
-  user clicked Allow once on Claude's own card because the order tool is set to "Needs approval"
-  (Customize > Connectors > tool permissions). Never set an order tool to "Always allow".
-- No options, margin, short selling or leverage unless the config allows it and the user confirms.
-- Broker keys live in environment variables or the Claude Desktop config, never in the chat.
+- Paper trading by default (`"paper": true`): orders go to the Upstox sandbox. Going live is the user's own decision, in their own config.
+- Nothing in this pack sends an order except trader-broker, and only when all of these hold: trader-risk
+  passed that exact order today, the user typed an explicit yes for that one order in the chat, and, for a
+  live order, the user sends it themselves (place.py in their own terminal, or the Upstox app). Claude never
+  sends a live order.
+- No F&O, margin (Upstox's intraday leverage) or short selling unless the config allows it and the user confirms.
+- Upstox access tokens live in environment variables, never in the chat.
