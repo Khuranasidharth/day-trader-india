@@ -224,6 +224,42 @@ class Flow(unittest.TestCase):
         self.assertEqual(fake.calls, [])
         self.assertIn("DRY RUN", out.getvalue())
 
+    def test_auto_approve_needs_config_flag(self):
+        code, _, err = run(ticket.main, ["approve", "--index", "1", "--auto"] + self.flags())
+        self.assertEqual(code, 1)
+        self.assertIn("auto_approve_paper", err)
+
+    def test_auto_approve_paper_then_local_place_fills(self):
+        self.cfg["auto_approve_paper"] = True
+        self.cfg["paper_broker"] = "local"
+        self.write_cfg()
+        code, out, _ = run(ticket.main, ["approve", "--index", "1", "--auto"] + self.flags())
+        self.assertEqual(code, 0)
+        self.assertIn("paper auto-approve", out)
+        portfolio = os.path.join(self.d, "portfolio.json")
+        with redirect_stdout(io.StringIO()) as pout:
+            pcode = place.cmd_place(self.args(portfolio=portfolio), opener=Fake())
+        self.assertEqual(pcode, 0)
+        self.assertIn("local paper ledger", pout.getvalue())
+        with open(self.paths["state"]) as fh:
+            statuses = [o["status"] for o in json.load(fh)["orders"]]
+        self.assertIn("approved", statuses)
+        self.assertIn("placed", statuses)
+        self.assertIn("filled", statuses)
+        with open(portfolio) as fh:
+            pf = json.load(fh)
+        self.assertEqual(pf["positions"][0]["ticker"], "RELIANCE")
+        self.assertEqual(pf["positions"][0]["shares"], 43.0)
+        self.assertLess(pf["cash"], 100000)
+
+    def test_auto_approve_refuses_live(self):
+        self.cfg["paper"] = False
+        self.cfg["auto_approve_paper"] = True
+        self.write_cfg()
+        code, _, err = run(ticket.main, ["approve", "--index", "1", "--auto"] + self.flags())
+        self.assertEqual(code, 1)
+        self.assertIn("paper only", err)
+
     def test_flatten_ticket(self):
         inst = os.path.join(self.d, "inst.json")
         with open(inst, "w") as fh:
