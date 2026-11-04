@@ -108,14 +108,20 @@ longer takes bare market orders from the API.
    READY or BLOCKED goes back to `/trader-risk`.
 2. Show ONE ticket and ask: "Place this order? Reply yes or no." One order
    per question. Never offer "yes to all".
-3. Run `ticket.py approve --index N --reply "<the user's reply, word for word>"`.
+3. **Human yes (default):** Run
+   `ticket.py approve --index N --reply "<the user's reply, word for word>"`.
    If it prints "Not recorded", the reply was not an explicit yes for this
    order (for example "sure", "haan", "yes to all", or a yes that names a
    different stock or amount). Ask again. Never turn a reply into a yes yourself.
-4. Paper: run `place.py --index N` and tell the user the result and the
-   sandbox order id. Live: show the user the command (`place.py --index N
-   --live`, to run in their own terminal) or the app steps from the ticket,
-   and wait. When they have placed it in the app, record it with
+   **Unattended paper:** When `trader/config.json` has `"paper": true` and
+   `"auto_approve_paper": true`, run `ticket.py approve --index N --auto`
+   instead. Live never accepts `--auto`.
+4. Paper: run `place.py --index N`. With `"paper_broker": "upstox"` (default)
+   this hits the Upstox sandbox. With `"paper_broker": "local"` it writes a
+   LOCAL-… id and fills the entry into `trader/portfolio.json` (no token).
+   Live: show the user the command (`place.py --index N --live`, to run in
+   their own terminal) or the app steps from the ticket, and wait. When they
+   have placed it in the app, record it with
    `ticket.py result --index N --status placed --broker-id ID`.
 5. A failed order is not retried without a new check and a new yes.
 

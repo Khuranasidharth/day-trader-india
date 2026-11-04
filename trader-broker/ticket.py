@@ -14,6 +14,9 @@ is the only thing that sends an order, and only after this log has your yes):
   approve   records your explicit yes for ONE order, with your reply word for
             word. It refuses "yes to all", "sure", "ok", a yes that names a
             different stock or amount, and any order that is not READY.
+            With --auto (paper only): when trader/config.json has
+            "auto_approve_paper": true and "paper": true, records a paper
+            auto-approve without a human reply. Live always refuses --auto.
   decline   records a no.
   result    records what happened when you placed it yourself in the Upstox
             app: placed (with Upstox's order id), or failed. place.py records
@@ -26,6 +29,7 @@ is the only thing that sends an order, and only after this log has your yes):
     python3 ticket.py show                    # every order, READY or not
     python3 ticket.py show --index 1 --json   # one ticket as JSON
     python3 ticket.py approve --index 1 --reply "yes"
+    python3 ticket.py approve --index 1 --auto          # paper + auto_approve_paper only
     python3 ticket.py result --index 1 --status placed --broker-id GTT-C26...
     python3 ticket.py fill --symbol RELIANCE --side buy --qty 43 --price 1193.60
     python3 ticket.py flatten --symbol RELIANCE --qty 43
@@ -517,27 +521,53 @@ def cmd_show(a):
     return 0 if any_ready else 1
 
 
+def paper_auto_ok(cfg):
+    """True when config allows unattended paper approvals. Live never qualifies."""
+    return bool(cfg.get("paper", True)) and bool(cfg.get("auto_approve_paper"))
+
+
 def cmd_approve(a):
     orders, cfg, risk, state, today, now = _load(a)
     order = _pick(orders, a.index)
     ready, label, rv = status_of(order, risk, state, today)
     if not ready:
         raise TicketError("order %d is not ready: %s" % (a.index, label))
-    ok, why = parse_yes(a.reply, order, [o.get("symbol", "") for o in orders])
-    if not ok:
-        print("Not recorded: %s. Ask the user again with the ticket for order %d." % (why, a.index))
-        return 1
+    auto = bool(getattr(a, "auto", False))
+    if auto and a.reply:
+        raise TicketError("use --auto or --reply, not both")
+    if not auto and not (a.reply or "").strip():
+        raise TicketError("approve needs --reply \"...\" or --auto (paper + auto_approve_paper)")
+    if auto:
+        if not cfg.get("paper", True):
+            raise TicketError("--auto is paper only: live orders still need a person to type yes")
+        if not cfg.get("auto_approve_paper"):
+            raise TicketError("--auto needs \"auto_approve_paper\": true in trader/config.json")
+        reply = "paper auto-approve"
+    else:
+        reply = a.reply
+        ok, why = parse_yes(reply, order, [o.get("symbol", "") for o in orders])
+        if not ok:
+            print("Not recorded: %s. Ask the user again with the ticket for order %d." % (why, a.index))
+            return 1
     loss, stop = max_loss(order)
+    paper_broker = str(cfg.get("paper_broker") or "upstox").lower()
     rec = {"at": ist_iso(now), "date": today, "index": a.index, "fingerprint": fingerprint(order),
            "symbol": nse_symbol(order.get("symbol", "")), "side": order.get("side"),
            "qty": order.get("qty"), "kind": kind_of(order, rv), "max_loss": loss, "stop": stop,
-           "plain": plain(order), "status": "approved", "reply": a.reply,
-           "paper": bool(cfg.get("paper", True)), "broker": "upstox"}
+           "plain": plain(order), "status": "approved", "reply": reply,
+           "paper": bool(cfg.get("paper", True)), "broker": "upstox",
+           "auto": auto, "paper_broker": paper_broker}
     state.setdefault("orders", []).append(rec)
     write_json(a.state, state)
-    print("Recorded your yes for order %d: %s." % (a.index, plain(order)))
+    if auto:
+        print("Recorded paper auto-approve for order %d: %s." % (a.index, plain(order)))
+    else:
+        print("Recorded your yes for order %d: %s." % (a.index, plain(order)))
     if cfg.get("paper", True):
-        print("Paper: send it to the Upstox sandbox with  python3 \"%s\" --index %d" % (PLACE, a.index))
+        if paper_broker == "local":
+            print("Paper (local ledger): send it with  python3 \"%s\" --index %d" % (PLACE, a.index))
+        else:
+            print("Paper: send it to the Upstox sandbox with  python3 \"%s\" --index %d" % (PLACE, a.index))
     else:
         print("LIVE: you send it yourself. Either run, in your own terminal, on the machine whose static IP is "
               "registered with Upstox:")
@@ -695,7 +725,9 @@ def main(argv=None):
     p = sub.add_parser("approve", help="record the user's explicit yes for one order")
     common(p)
     p.add_argument("--index", type=int, required=True)
-    p.add_argument("--reply", required=True, help="the user's reply, word for word")
+    p.add_argument("--reply", help="the user's reply, word for word (required unless --auto)")
+    p.add_argument("--auto", action="store_true",
+                   help="paper only: approve without a human reply when auto_approve_paper is true")
     p = sub.add_parser("decline", help="record a no")
     common(p)
     p.add_argument("--index", type=int, required=True)

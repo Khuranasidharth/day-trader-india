@@ -27,6 +27,12 @@ UPSTOX_ACCESS_TOKEN (live; Upstox makes you renew it every day). Since April
 app: from a home connection without one, place live orders in the Upstox app
 instead (ticket.py show prints the steps).
 
+Paper can also use a local ledger (no Upstox call) when trader/config.json has
+"paper": true and "paper_broker": "local". place.py then records a LOCAL-…
+order id and immediately fills the entry at the limit (or last) price into
+trader/portfolio.json. Use this for unattended cloud paper runs; switch
+paper_broker to "upstox" when a sandbox token is available.
+
 Every result (placed with Upstox's order id, or failed with Upstox's message)
 is appended to trader/state/broker.json.
 """
@@ -143,6 +149,43 @@ def record(state_path, state, now, today, idx, fp, rec, status, extra):
     ticket.write_json(state_path, state)
 
 
+def _fill_price(order):
+    """Entry fill price for a local paper fill: limit price, else stop/trigger, else 0."""
+    for key in ("price", "trigger_price"):
+        try:
+            p = float(order.get(key) or 0)
+        except (TypeError, ValueError):
+            p = 0.0
+        if p > 0:
+            return p
+    return 0.0
+
+
+def place_local(a, order, cfg, state, today, now, idx, fp, rec):
+    """Paper local ledger: no Upstox call. Records placed + fills the entry into portfolio.json."""
+    oid = "LOCAL-%s-%d" % (today.replace("-", ""), idx)
+    record(a.state, state, now, today, idx, fp, rec, "placed",
+           {"broker_order_id": oid, "paper": True, "paper_broker": "local", "url": "local://ledger"})
+    print("PLACED on the local paper ledger: %s. Order id %s." % (ticket.plain(order), oid))
+    px = _fill_price(order)
+    qty = order.get("qty")
+    if px <= 0 or qty is None:
+        print("Entry not auto-filled (need a positive price and qty). Record a fill with ticket.py fill.")
+        return 0
+    fill_args = type("A", (), {
+        "symbol": rec["symbol"], "side": str(order.get("side", "buy")).lower(),
+        "qty": qty, "price": px, "date": today, "now": a.now,
+        "portfolio": getattr(a, "portfolio", "trader/portfolio.json"),
+        "config": a.config, "state": a.state,
+    })()
+    ticket.cmd_fill(fill_args)
+    if ticket.is_bracket(order):
+        print("Local paper: entry filled at %s. Watch the stop and the target with trader-alerts "
+              "(alerts.py add --from-plan); record the exit with ticket.py fill when it hits."
+              % ticket._str_num(px))
+    return 0
+
+
 def cmd_place(a, opener=None, ask=input, is_tty=None):
     orders, cfg, risk, state, today, now = ticket._load(a)
     order = ticket._pick(orders, a.index)
@@ -155,7 +198,8 @@ def cmd_place(a, opener=None, ask=input, is_tty=None):
     rec = ticket.latest(state, fp, today)
     if not rec:
         raise PlaceError("not sent: no yes is recorded today for order %d (ticket.py approve --index %d --reply "
-                         "\"<the user's reply>\")" % (a.index, a.index))
+                         "\"<the user's reply>\", or --auto when auto_approve_paper is on)"
+                         % (a.index, a.index))
     if rec.get("status") != "approved":
         raise PlaceError("not sent: order %d is already %s today (%s). A new try needs a new check and a new "
                          "yes." % (a.index, rec.get("status"), rec.get("at")))
@@ -169,11 +213,19 @@ def cmd_place(a, opener=None, ask=input, is_tty=None):
     if not order.get("instrument_token"):
         raise PlaceError("not sent: the order has no instrument_token")
     paper = not a.live
+    paper_broker = str(cfg.get("paper_broker") or "upstox").lower()
     req = ticket.upstox_request(order, paper)
     if a.dry_run:
-        print("DRY RUN, nothing sent. %s %s (%s):" % (req["method"], req["url"], req["note"]))
-        print(json.dumps(req["body"], indent=2))
+        if paper and paper_broker == "local":
+            print("DRY RUN, nothing sent. local paper ledger fill at %s:" % _fill_price(order))
+            print(json.dumps({"symbol": order.get("symbol"), "side": order.get("side"),
+                              "qty": order.get("qty"), "price": _fill_price(order)}, indent=2))
+        else:
+            print("DRY RUN, nothing sent. %s %s (%s):" % (req["method"], req["url"], req["note"]))
+            print(json.dumps(req["body"], indent=2))
         return 0
+    if paper and paper_broker == "local":
+        return place_local(a, order, cfg, state, today, now, a.index, fp, rec)
     if not paper:
         confirm_live(order, ask, is_tty)
     token = _token(paper)
@@ -231,6 +283,8 @@ def main(argv=None):
     ap.add_argument("--config", default="trader/config.json")
     ap.add_argument("--risk", default="trader/state/risk.json")
     ap.add_argument("--state", default="trader/state/broker.json")
+    ap.add_argument("--portfolio", default="trader/portfolio.json",
+                    help="portfolio.json for local paper fills (paper_broker: local)")
     ap.add_argument("--now", help="pretend it is this India time (IST), e.g. \"2026-10-26 10:00\"")
     ap.add_argument("--today", help="YYYY-MM-DD (default: today in India)")
     p = sub.add_parser("cancel-gtt", help="cancel a live GTT's open legs")
